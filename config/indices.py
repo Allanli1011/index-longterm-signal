@@ -11,6 +11,7 @@ Each index entry contains:
 - tick_value: Dollar value per index point for the futures contract
 - margin: Approximate initial margin requirement (USD)
 """
+from __future__ import annotations
 
 INDEX_CONFIG = {
     # ==================== US ====================
@@ -178,7 +179,7 @@ INDEX_CONFIG = {
         "country": "China",
         "tick_value": 1.0,
         "margin": 2000,
-        "price_source": "akshare",
+        "price_source": "auto",
         "description": "China A-share large-cap, 50 stocks",
     },
     # ==================== Emerging ====================

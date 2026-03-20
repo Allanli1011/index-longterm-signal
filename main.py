@@ -23,6 +23,7 @@ Usage:
     # Quick mode (fewer parameter combinations)
     python main.py --all --optimize --quick
 """
+from __future__ import annotations
 
 import argparse
 import logging

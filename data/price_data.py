@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Price data fetching and caching module.
 
@@ -309,6 +311,8 @@ def _fetch_yfinance(ticker: str, start: str,
         df = stock.history(start=start, end=end, auto_adjust=True)
 
         if df is not None and len(df) > 0:
+            if df.index.tz is not None:
+                df.index = df.index.tz_localize(None)
             _save_cache(cache_file, df)
             return df
     except Exception as e:

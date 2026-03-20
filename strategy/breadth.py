@@ -10,6 +10,7 @@ Key indicators:
 3. Breadth Divergence: Divergence between price and breadth
 4. Multi-timeframe Breadth: Composite of 50/100/200 day breadth
 """
+from __future__ import annotations
 
 import numpy as np
 import pandas as pd

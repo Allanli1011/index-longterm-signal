@@ -9,6 +9,7 @@ Supports multiple signal generation modes:
 3. Divergence Enhanced: Threshold + divergence signals for stronger conviction
 4. Composite: Weighted combination of all signals
 """
+from __future__ import annotations
 
 import numpy as np
 import pandas as pd
@@ -39,13 +40,13 @@ class StrategyParams:
     use_multi_tf: bool = False
     multi_tf_weight: float = 0.3
 
-    # Risk management
-    stop_loss_pct: float = 5.0
-    trailing_stop_pct: float = 3.0
+    # Position management
+    stop_loss_pct: float = 10.0
+    trailing_stop_pct: float = 15.0
     max_holding_days: int = 0  # 0 = no limit
 
     # Signal mode
-    mode: str = "momentum_confirmed"  # simple, momentum_confirmed, divergence, composite
+    mode: str = "alpha_breadth"  # simple, momentum_confirmed, divergence, composite, crossover, alpha_breadth
 
     def to_dict(self) -> dict:
         return {k: v for k, v in self.__dict__.items()}
@@ -85,9 +86,11 @@ def generate_signals(signals_df: pd.DataFrame,
         "momentum_confirmed": _momentum_confirmed_signals,
         "divergence": _divergence_enhanced_signals,
         "composite": _composite_signals,
+        "crossover": _crossover_signals,
+        "alpha_breadth": _alpha_breadth_signals,
     }
 
-    func = mode_func.get(params.mode, _momentum_confirmed_signals)
+    func = mode_func.get(params.mode, _alpha_breadth_signals)
     df = func(df, params)
 
     # Apply position management (holding logic with exits)
@@ -113,6 +116,49 @@ def _simple_threshold_signals(df: pd.DataFrame,
     df.loc[breadth <= params.breadth_oversold, "signal_reason"] = "breadth_oversold"
     df.loc[breadth >= params.breadth_overbought, "signal_reason"] = "breadth_overbought"
 
+    return df
+
+
+def _crossover_signals(df: pd.DataFrame, params: StrategyParams) -> pd.DataFrame:
+    """
+    Crossover SAR (Stop and Reverse) signals based on user request.
+    Long when breadth crosses above breadth_oversold (20).
+    Short when breadth crosses below breadth_overbought (80).
+    """
+    breadth = df["breadth"]
+    prev_breadth = breadth.shift(1).fillna(breadth)
+    
+    long_thresh = params.breadth_oversold
+    short_thresh = params.breadth_overbought
+    
+    long_condition = (prev_breadth < long_thresh) & (breadth >= long_thresh)
+    short_condition = (prev_breadth > short_thresh) & (breadth <= short_thresh)
+    
+    df.loc[long_condition, "raw_signal"] = SIGNAL_LONG
+    df.loc[long_condition, "signal_reason"] = "cross_above_oversold"
+    
+    df.loc[short_condition, "raw_signal"] = SIGNAL_SHORT
+    df.loc[short_condition, "signal_reason"] = "cross_below_overbought"
+    
+    return df
+
+
+def _alpha_breadth_signals(df: pd.DataFrame, params: StrategyParams) -> pd.DataFrame:
+    """
+    Alpha breadth strategy to beat buy & hold:
+    - Long-biased: Capitalizes on index upward drift (no shorting).
+    - Entry: Breadth is oversold (panic) AND momentum is positive (recovering).
+    - Exits are handled purely in position management.
+    """
+    breadth = df["breadth"]
+    momentum = df.get("momentum", pd.Series(0, index=df.index))
+    
+    # Enter long when panic is over and breadth starts recovering
+    long_condition = (breadth <= params.breadth_oversold) & (momentum > 0)
+    
+    df.loc[long_condition, "raw_signal"] = SIGNAL_LONG
+    df.loc[long_condition, "signal_reason"] = "panic_recovery"
+    
     return df
 
 
@@ -284,6 +330,15 @@ def _apply_position_management(df: pd.DataFrame,
 
         # Check exit conditions for existing positions
         if position == SIGNAL_LONG:
+            if params.mode == "crossover" and raw == SIGNAL_SHORT:
+                position = SIGNAL_SHORT
+                entry_price = price
+                entry_date_idx = i
+                max_price = min_price = price
+                signals.append(SIGNAL_SHORT)
+                reasons.append("cross_below_overbought")
+                continue
+
             # Track for trailing stop
             if price > max_price:
                 max_price = price
@@ -291,9 +346,16 @@ def _apply_position_management(df: pd.DataFrame,
             # Exit conditions
             exit_reason = None
 
-            if breadth >= params.exit_neutral_low:
-                exit_reason = "breadth_neutral_exit"
-            elif params.stop_loss_pct > 0 and entry_price > 0:
+            if params.mode == "alpha_breadth":
+                momentum_val = df.get("momentum", pd.Series(0, index=df.index)).iloc[i]
+                if breadth >= params.breadth_overbought and momentum_val < 0:
+                    exit_reason = "euphoria_fading"
+            elif params.mode != "crossover":
+                if breadth >= params.exit_neutral_low:
+                    exit_reason = "breadth_neutral_exit"
+            
+            # Apply stops for modes that allow them (alpha and others)
+            if exit_reason is None and params.stop_loss_pct > 0 and entry_price > 0:
                 if price <= entry_price * (1 - params.stop_loss_pct / 100):
                     exit_reason = "stop_loss"
             if exit_reason is None and params.trailing_stop_pct > 0 and max_price > 0:
@@ -310,22 +372,32 @@ def _apply_position_management(df: pd.DataFrame,
                 continue
 
         elif position == SIGNAL_SHORT:
+            if params.mode == "crossover" and raw == SIGNAL_LONG:
+                position = SIGNAL_LONG
+                entry_price = price
+                entry_date_idx = i
+                max_price = min_price = price
+                signals.append(SIGNAL_LONG)
+                reasons.append("cross_above_oversold")
+                continue
+
             if price < min_price:
                 min_price = price
 
             exit_reason = None
 
-            if breadth <= params.exit_neutral_high:
-                exit_reason = "breadth_neutral_exit"
-            elif params.stop_loss_pct > 0 and entry_price > 0:
-                if price >= entry_price * (1 + params.stop_loss_pct / 100):
-                    exit_reason = "stop_loss"
-            if exit_reason is None and params.trailing_stop_pct > 0 and min_price > 0:
-                if price >= min_price * (1 + params.trailing_stop_pct / 100):
-                    exit_reason = "trailing_stop"
-            if (exit_reason is None and params.max_holding_days > 0 and
-                    (i - entry_date_idx) >= params.max_holding_days):
-                exit_reason = "max_holding"
+            if params.mode != "crossover":
+                if breadth <= params.exit_neutral_high:
+                    exit_reason = "breadth_neutral_exit"
+                elif params.stop_loss_pct > 0 and entry_price > 0:
+                    if price >= entry_price * (1 + params.stop_loss_pct / 100):
+                        exit_reason = "stop_loss"
+                if exit_reason is None and params.trailing_stop_pct > 0 and min_price > 0:
+                    if price >= min_price * (1 + params.trailing_stop_pct / 100):
+                        exit_reason = "trailing_stop"
+                if (exit_reason is None and params.max_holding_days > 0 and
+                        (i - entry_date_idx) >= params.max_holding_days):
+                    exit_reason = "max_holding"
 
             if exit_reason:
                 position = SIGNAL_FLAT

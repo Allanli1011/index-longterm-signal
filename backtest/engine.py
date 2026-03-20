@@ -4,6 +4,7 @@ Backtesting Engine.
 Simulates strategy execution on historical data and calculates
 comprehensive performance metrics.
 """
+from __future__ import annotations
 
 import numpy as np
 import pandas as pd

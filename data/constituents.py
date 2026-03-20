@@ -12,11 +12,25 @@ All fetchers return a list of Yahoo Finance-compatible tickers,
 except Chinese A-share fetchers which return A-share codes (e.g., "600519")
 that need to be used with akshare/baostock for price data.
 """
+from __future__ import annotations
 
 import logging
 from functools import lru_cache
 
 import pandas as pd
+
+import requests
+def _read_wiki_html(url):
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+    response = requests.get(url, headers=headers)
+    response.raise_for_status()
+    # read_html needs StringIO in newer pandas to avoid warnings, but string works too
+    try:
+        from io import StringIO
+        return pd.read_html(StringIO(response.text))
+    except Exception:
+        return pd.read_html(response.text)
+
 
 logger = logging.getLogger(__name__)
 
@@ -230,7 +244,7 @@ def _china_a50_hardcoded() -> list[str]:
 def _get_sp500() -> list[str]:
     """Fetch S&P 500 constituents from Wikipedia."""
     url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-    tables = pd.read_html(url)
+    tables = _read_wiki_html(url)
     df = tables[0]
     tickers = df["Symbol"].tolist()
     tickers = [t.replace(".", "-") for t in tickers]
@@ -240,7 +254,7 @@ def _get_sp500() -> list[str]:
 def _get_nasdaq100() -> list[str]:
     """Fetch NASDAQ 100 constituents from Wikipedia."""
     url = "https://en.wikipedia.org/wiki/Nasdaq-100"
-    tables = pd.read_html(url)
+    tables = _read_wiki_html(url)
     for table in tables:
         if "Ticker" in table.columns:
             return table["Ticker"].tolist()
@@ -254,7 +268,7 @@ def _get_nasdaq100() -> list[str]:
 def _get_djia() -> list[str]:
     """Fetch Dow Jones constituents from Wikipedia."""
     url = "https://en.wikipedia.org/wiki/Dow_Jones_Industrial_Average"
-    tables = pd.read_html(url)
+    tables = _read_wiki_html(url)
     for table in tables:
         if "Symbol" in table.columns:
             return table["Symbol"].tolist()
@@ -306,7 +320,7 @@ def _get_russell2000() -> list[str]:
 def _get_ftse100() -> list[str]:
     """Fetch FTSE 100 constituents from Wikipedia."""
     url = "https://en.wikipedia.org/wiki/FTSE_100_Index"
-    tables = pd.read_html(url)
+    tables = _read_wiki_html(url)
     for table in tables:
         for col in ["Ticker", "EPIC", "Symbol"]:
             if col in table.columns:
@@ -318,7 +332,7 @@ def _get_ftse100() -> list[str]:
 def _get_dax() -> list[str]:
     """Fetch DAX 40 constituents from Wikipedia."""
     url = "https://en.wikipedia.org/wiki/DAX"
-    tables = pd.read_html(url)
+    tables = _read_wiki_html(url)
     for table in tables:
         for col in ["Ticker", "Ticker symbol", "Symbol"]:
             if col in table.columns:
@@ -330,7 +344,7 @@ def _get_dax() -> list[str]:
 def _get_cac40() -> list[str]:
     """Fetch CAC 40 constituents from Wikipedia."""
     url = "https://en.wikipedia.org/wiki/CAC_40"
-    tables = pd.read_html(url)
+    tables = _read_wiki_html(url)
     for table in tables:
         for col in ["Ticker", "Symbol"]:
             if col in table.columns:
@@ -343,7 +357,7 @@ def _get_eurostoxx50() -> list[str]:
     """Fetch Euro Stoxx 50 constituents from Wikipedia, with hardcoded fallback."""
     try:
         url = "https://en.wikipedia.org/wiki/EURO_STOXX_50"
-        tables = pd.read_html(url)
+        tables = _read_wiki_html(url)
         for table in tables:
             if "Ticker" in table.columns:
                 tickers = table["Ticker"].tolist()
@@ -372,7 +386,7 @@ def _get_eurostoxx50() -> list[str]:
 def _get_nikkei225() -> list[str]:
     """Fetch Nikkei 225 constituents from Wikipedia."""
     url = "https://en.wikipedia.org/wiki/Nikkei_225"
-    tables = pd.read_html(url)
+    tables = _read_wiki_html(url)
     for table in tables:
         for col in ["Ticker", "Code", "Securities code"]:
             if col in table.columns:
@@ -385,7 +399,7 @@ def _get_nikkei225() -> list[str]:
 def _get_hangseng() -> list[str]:
     """Fetch Hang Seng Index constituents from Wikipedia."""
     url = "https://en.wikipedia.org/wiki/Hang_Seng_Index"
-    tables = pd.read_html(url)
+    tables = _read_wiki_html(url)
     for table in tables:
         for col in ["Ticker", "Stock code", "Code"]:
             if col in table.columns:
@@ -439,7 +453,7 @@ def _get_kospi200() -> list[str]:
 def _get_nifty50() -> list[str]:
     """Fetch Nifty 50 constituents from Wikipedia."""
     url = "https://en.wikipedia.org/wiki/NIFTY_50"
-    tables = pd.read_html(url)
+    tables = _read_wiki_html(url)
     for table in tables:
         if "Symbol" in table.columns:
             tickers = table["Symbol"].tolist()

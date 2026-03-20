@@ -8,8 +8,9 @@ import types
 from unittest.mock import patch, MagicMock
 import pandas as pd
 import pytest
+import os
 
-sys.path.insert(0, "/home/user/index-longterm-signal")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 # ============================================================================
