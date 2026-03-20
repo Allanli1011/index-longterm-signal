@@ -32,8 +32,22 @@
 | Hang Seng | HSI | 香港 |
 | S&P/ASX 200 | AP | 澳大利亚 |
 | KOSPI 200 | KS200 | 韩国 |
+| **沪深300** | **IF** | **中国** |
+| **中证500** | **IC** | **中国** |
+| **中证1000** | **IM** | **中国** |
 | FTSE China A50 | XIN | 中国 |
 | Nifty 50 | NIFTY | 印度 |
+
+## 数据来源
+
+| 数据源 | 覆盖范围 | 特点 |
+|--------|---------|------|
+| [AKShare](https://github.com/akfamily/akshare) | 中国A股（成份股+行情） | 中证官网数据，免费开源 |
+| [BaoStock](http://baostock.com) | 中国A股（备用） | 完全免费，无需注册 |
+| [yfinance](https://github.com/ranaroussi/yfinance) | 国际市场行情 | Yahoo Finance数据 |
+| Wikipedia | 国际指数成份股 | 实时抓取，覆盖主要指数 |
+
+**数据获取优先级**: AKShare → BaoStock → Wikipedia → 硬编码列表
 
 ## 安装
 

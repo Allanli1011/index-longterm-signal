@@ -89,8 +89,10 @@ def run_single_backtest(index_key: str, params: StrategyParams | None = None,
     logger.info(f"  Got {len(tickers)} constituent tickers")
 
     # Step 2: Download price data
-    logger.info("Step 2: Downloading price data...")
-    close_prices = get_bulk_close_prices(tickers, start=start, end=end)
+    price_source = config.get("price_source", "auto")
+    logger.info(f"Step 2: Downloading price data (source={price_source})...")
+    close_prices = get_bulk_close_prices(tickers, start=start, end=end,
+                                         source=price_source)
     if close_prices.empty:
         logger.error("Failed to download constituent prices")
         return None
@@ -98,7 +100,8 @@ def run_single_backtest(index_key: str, params: StrategyParams | None = None,
                 f"{len(close_prices)} trading days")
 
     # Get index price
-    index_data = get_index_price(config["index_ticker"], start=start, end=end)
+    index_data = get_index_price(config["index_ticker"], start=start, end=end,
+                                  source=price_source)
     if index_data is None or index_data.empty:
         logger.error(f"Failed to download index price for {config['index_ticker']}")
         return None
@@ -169,17 +172,20 @@ def run_optimization(index_key: str, walk_forward: bool = False,
     logger.info(f"{'='*60}")
 
     # Get data
+    price_source = config.get("price_source", "auto")
     tickers = get_constituents(config["constituent_source"])
     if not tickers:
         logger.error(f"No constituents found for {index_key}")
         return None
 
-    close_prices = get_bulk_close_prices(tickers, start=start, end=end)
+    close_prices = get_bulk_close_prices(tickers, start=start, end=end,
+                                          source=price_source)
     if close_prices.empty:
         logger.error("Failed to download prices")
         return None
 
-    index_data = get_index_price(config["index_ticker"], start=start, end=end)
+    index_data = get_index_price(config["index_ticker"], start=start, end=end,
+                                  source=price_source)
     if index_data is None or index_data.empty:
         logger.error("Failed to download index price")
         return None

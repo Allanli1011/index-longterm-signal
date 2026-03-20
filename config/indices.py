@@ -136,7 +136,40 @@ INDEX_CONFIG = {
         "margin": 15000000,  # KRW
         "description": "Korean large-cap, 200 stocks",
     },
-    # ==================== Emerging ====================
+    # ==================== China A-shares ====================
+    "CSI300": {
+        "name": "沪深300",
+        "index_ticker": "000300.SS",
+        "futures_ticker": "IF",
+        "constituent_source": "csi300",
+        "country": "China",
+        "tick_value": 300.0,  # CNY
+        "margin": 170000,  # CNY
+        "price_source": "akshare",
+        "description": "沪深两市大盘, 300只成份股",
+    },
+    "CSI500": {
+        "name": "中证500",
+        "index_ticker": "000905.SS",
+        "futures_ticker": "IC",
+        "constituent_source": "csi500",
+        "country": "China",
+        "tick_value": 200.0,  # CNY
+        "margin": 130000,  # CNY
+        "price_source": "akshare",
+        "description": "沪深两市中盘, 500只成份股",
+    },
+    "CSI1000": {
+        "name": "中证1000",
+        "index_ticker": "000852.SS",
+        "futures_ticker": "IM",
+        "constituent_source": "csi1000",
+        "country": "China",
+        "tick_value": 200.0,  # CNY
+        "margin": 100000,  # CNY
+        "price_source": "akshare",
+        "description": "沪深两市小盘, 1000只成份股",
+    },
     "CHINA_A50": {
         "name": "FTSE China A50",
         "index_ticker": "^XIN9",
@@ -145,8 +178,10 @@ INDEX_CONFIG = {
         "country": "China",
         "tick_value": 1.0,
         "margin": 2000,
+        "price_source": "akshare",
         "description": "China A-share large-cap, 50 stocks",
     },
+    # ==================== Emerging ====================
     "NIFTY50": {
         "name": "Nifty 50",
         "index_ticker": "^NSEI",
