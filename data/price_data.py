@@ -80,10 +80,10 @@ def get_bulk_close_prices(tickers: list[str], start: str = "2005-01-01",
 
 def _get_ashare_index_price(ticker: str, start: str,
                              end: str | None) -> pd.DataFrame:
-    """Fetch Chinese index price data via akshare."""
-    cache_file = _get_cache_path(f"akshare_idx_{ticker}", start, end)
-    cached = _load_cache(cache_file)
-    if cached is not None:
+    """Fetch Chinese index price data via akshare (with incremental cache)."""
+    cache_file = _get_cache_path(f"akshare_idx_{ticker}", start)
+    cached, fetch_start = _load_cache_for_incremental(cache_file, end)
+    if cached is not None and fetch_start is None:
         return cached
 
     try:
@@ -91,8 +91,10 @@ def _get_ashare_index_price(ticker: str, start: str,
 
         # Normalize ticker: "000300.SS" -> "000300", "sh.000300" -> "000300"
         code = _normalize_ashare_code(ticker)
+        query_start = fetch_start or start
 
-        logger.info(f"Fetching A-share index {code} via akshare...")
+        logger.info(f"Fetching A-share index {code} via akshare "
+                    f"(from {query_start})...")
         df = ak.stock_zh_index_daily(symbol=f"sh{code}")
 
         if df is None or df.empty:
@@ -106,17 +108,17 @@ def _get_ashare_index_price(ticker: str, start: str,
                 "close": "Close", "volume": "Volume",
             })
 
-            # Filter date range
-            if start:
-                df = df[df.index >= start]
-            if end:
-                df = df[df.index <= end]
+            # Filter to only new data
+            df = df[df.index >= query_start]
 
-            _save_cache(cache_file, df)
-            return df
+            return _merge_and_save(cache_file, cached, df, end)
 
     except Exception as e:
         logger.warning(f"akshare index fetch failed for {ticker}: {e}")
+
+    # If we have partial cache, return it rather than re-fetching everything
+    if cached is not None and not cached.empty:
+        return cached
 
     # Fallback to baostock
     return _get_baostock_index_price(ticker, start, end)
@@ -124,10 +126,10 @@ def _get_ashare_index_price(ticker: str, start: str,
 
 def _get_baostock_index_price(ticker: str, start: str,
                                 end: str | None) -> pd.DataFrame:
-    """Fetch Chinese index price data via baostock."""
-    cache_file = _get_cache_path(f"baostock_idx_{ticker}", start, end)
-    cached = _load_cache(cache_file)
-    if cached is not None:
+    """Fetch Chinese index price data via baostock (with incremental cache)."""
+    cache_file = _get_cache_path(f"baostock_idx_{ticker}", start)
+    cached, fetch_start = _load_cache_for_incremental(cache_file, end)
+    if cached is not None and fetch_start is None:
         return cached
 
     try:
@@ -140,13 +142,15 @@ def _get_baostock_index_price(ticker: str, start: str,
         else:
             bs_code = f"sh.{code}"
 
+        query_start = fetch_start or start
+        end_date = end or pd.Timestamp.now().strftime("%Y-%m-%d")
+
         lg = bs.login()
         try:
-            end_date = end or pd.Timestamp.now().strftime("%Y-%m-%d")
             rs = bs.query_history_k_data_plus(
                 bs_code,
                 "date,open,high,low,close,volume",
-                start_date=start,
+                start_date=query_start,
                 end_date=end_date,
                 frequency="d",
                 adjustflag="2",  # 前复权
@@ -167,12 +171,13 @@ def _get_baostock_index_price(ticker: str, start: str,
                 "close": "Close", "volume": "Volume",
             })
             df = df[["Open", "High", "Low", "Close", "Volume"]]
-            _save_cache(cache_file, df)
-            return df
+            return _merge_and_save(cache_file, cached, df, end)
 
     except Exception as e:
         logger.error(f"baostock index fetch failed for {ticker}: {e}")
 
+    if cached is not None and not cached.empty:
+        return cached
     return pd.DataFrame()
 
 
@@ -182,10 +187,12 @@ def _get_ashare_bulk_close(tickers: list[str], start: str,
     """
     Fetch close prices for multiple A-share stocks.
     Uses akshare primary, baostock fallback.
+    Individual tickers use incremental caching; the bulk cache
+    is rebuilt from the per-ticker caches.
     """
-    cache_key = _bulk_cache_key(tickers, start, end, prefix="ashare")
-    cached = _load_bulk_cache(cache_key)
-    if cached is not None:
+    cache_key = _bulk_cache_key(tickers, start, prefix="ashare")
+    cached, fetch_start = _load_bulk_cache_incremental(cache_key, end)
+    if cached is not None and fetch_start is None:
         return cached
 
     close_prices = pd.DataFrame()
@@ -220,14 +227,15 @@ def _get_ashare_bulk_close(tickers: list[str], start: str,
 def _get_single_ashare_close(ticker: str, start: str,
                                end: str | None,
                                source: str = "akshare") -> pd.Series | None:
-    """Fetch close price for a single A-share stock."""
-    # Try individual cache first
-    cache_file = _get_cache_path(f"ashare_{ticker}", start, end)
-    cached = _load_cache(cache_file)
-    if cached is not None and "Close" in cached.columns:
-        return cached["Close"]
+    """Fetch close price for a single A-share stock (with incremental cache)."""
+    cache_file = _get_cache_path(f"ashare_{ticker}", start)
+    cached, fetch_start = _load_cache_for_incremental(cache_file, end)
+    if cached is not None and fetch_start is None:
+        if "Close" in cached.columns:
+            return cached["Close"]
 
     code = _normalize_ashare_code(ticker)
+    query_start = fetch_start or start
 
     # Try akshare
     if source in ("akshare", "auto"):
@@ -236,17 +244,15 @@ def _get_single_ashare_close(ticker: str, start: str,
             df = ak.stock_zh_a_hist(
                 symbol=code,
                 period="daily",
-                start_date=start.replace("-", ""),
+                start_date=query_start.replace("-", ""),
                 end_date=(end or pd.Timestamp.now().strftime("%Y%m%d")).replace("-", ""),
                 adjust="qfq",  # 前复权
             )
             if df is not None and len(df) > 0:
                 df.index = pd.to_datetime(df["日期"])
-                result = df["收盘"].rename("Close")
-                # Save to cache
-                cache_df = pd.DataFrame({"Close": result})
-                _save_cache(cache_file, cache_df)
-                return result
+                new_df = pd.DataFrame({"Close": df["收盘"].rename("Close")})
+                merged = _merge_and_save(cache_file, cached, new_df, end)
+                return merged["Close"]
         except Exception as e:
             logger.debug(f"akshare failed for {ticker}: {e}")
 
@@ -261,13 +267,14 @@ def _get_single_ashare_close(ticker: str, start: str,
         else:
             bs_code = f"sz.{code}"
 
+        end_date = end or pd.Timestamp.now().strftime("%Y-%m-%d")
+
         lg = bs.login()
         try:
-            end_date = end or pd.Timestamp.now().strftime("%Y-%m-%d")
             rs = bs.query_history_k_data_plus(
                 bs_code,
                 "date,close",
-                start_date=start,
+                start_date=query_start,
                 end_date=end_date,
                 frequency="d",
                 adjustflag="2",
@@ -282,13 +289,15 @@ def _get_single_ashare_close(ticker: str, start: str,
             df = pd.DataFrame(rows, columns=["date", "close"])
             df.index = pd.to_datetime(df["date"])
             df["close"] = pd.to_numeric(df["close"], errors="coerce")
-            result = df["close"].rename("Close")
-            cache_df = pd.DataFrame({"Close": result})
-            _save_cache(cache_file, cache_df)
-            return result
+            new_df = pd.DataFrame({"Close": df["close"].rename("Close")})
+            merged = _merge_and_save(cache_file, cached, new_df, end)
+            return merged["Close"]
     except Exception as e:
         logger.debug(f"baostock failed for {ticker}: {e}")
 
+    # Return whatever we have cached
+    if cached is not None and not cached.empty and "Close" in cached.columns:
+        return cached["Close"]
     return None
 
 
@@ -299,44 +308,47 @@ def _get_single_ashare_close(ticker: str, start: str,
 
 def _fetch_yfinance(ticker: str, start: str,
                      end: str | None) -> pd.DataFrame | None:
-    """Fetch data via yfinance with caching."""
-    cache_file = _get_cache_path(f"yf_{ticker}", start, end)
-    cached = _load_cache(cache_file)
-    if cached is not None:
+    """Fetch data via yfinance with incremental caching."""
+    cache_file = _get_cache_path(f"yf_{ticker}", start)
+    cached, fetch_start = _load_cache_for_incremental(cache_file, end)
+    if cached is not None and fetch_start is None:
         return cached
 
     try:
         import yfinance as yf
+        query_start = fetch_start or start
         stock = yf.Ticker(ticker)
-        df = stock.history(start=start, end=end, auto_adjust=True)
+        df = stock.history(start=query_start, end=end, auto_adjust=True)
 
         if df is not None and len(df) > 0:
             if df.index.tz is not None:
-                df.index = df.index.tz_localize(None)
-            _save_cache(cache_file, df)
-            return df
+                df.index = df.index.tz_convert(None)
+            return _merge_and_save(cache_file, cached, df, end)
     except Exception as e:
         logger.debug(f"yfinance error for {ticker}: {e}")
 
+    if cached is not None and not cached.empty:
+        return cached
     return None
 
 
 def _get_yfinance_bulk_close(tickers: list[str], start: str,
                                end: str | None) -> pd.DataFrame:
-    """Bulk download close prices via yfinance."""
-    cache_key = _bulk_cache_key(tickers, start, end, prefix="yf")
-    cached = _load_bulk_cache(cache_key)
-    if cached is not None:
+    """Bulk download close prices via yfinance (with incremental cache)."""
+    cache_key = _bulk_cache_key(tickers, start, prefix="yf")
+    cached, fetch_start = _load_bulk_cache_incremental(cache_key, end)
+    if cached is not None and fetch_start is None:
         return cached
 
     try:
         import yfinance as yf
-        logger.info(f"Bulk downloading {len(tickers)} tickers via yfinance...")
+        query_start = fetch_start or start
+        logger.info(f"Bulk downloading {len(tickers)} tickers via yfinance "
+                    f"(from {query_start})...")
         data = yf.download(
             tickers,
-            start=start,
+            start=query_start,
             end=end,
-            group_by="ticker",
             auto_adjust=True,
             threads=True,
             progress=True,
@@ -350,17 +362,37 @@ def _get_yfinance_bulk_close(tickers: list[str], start: str,
                 try:
                     if ticker in data.columns.get_level_values(0):
                         close_prices[ticker] = data[ticker]["Close"]
+                    elif ticker in data.columns.get_level_values(-1):
+                        close_prices[ticker] = data.xs(
+                            ticker, level=-1, axis=1)["Close"]
                 except (KeyError, TypeError):
                     logger.debug(f"No data for {ticker}")
 
+        if data.index.tz is not None:
+            close_prices.index = close_prices.index.tz_convert(None)
+
         close_prices = close_prices.dropna(how="all")
+
+        # Merge with cached data
+        if cached is not None and not cached.empty:
+            combined = pd.concat([cached, close_prices])
+            combined = combined[~combined.index.duplicated(keep="last")]
+            close_prices = combined.sort_index()
+
         _save_bulk_cache(cache_key, close_prices)
+
+        # Apply end filter
+        if end:
+            close_prices = close_prices[close_prices.index <= end]
+
         logger.info(f"Got data for {len(close_prices.columns)} tickers, "
                      f"{len(close_prices)} trading days")
         return close_prices
 
     except Exception as e:
         logger.error(f"yfinance bulk download failed: {e}")
+        if cached is not None and not cached.empty:
+            return cached
         return pd.DataFrame()
 
 
@@ -403,11 +435,10 @@ def _normalize_ashare_code(ticker: str) -> str:
 # ============================================================================
 
 
-def _get_cache_path(key: str, start: str, end: str | None) -> Path:
+def _get_cache_path(key: str, start: str, end: str | None = None) -> Path:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     safe_key = key.replace("/", "_").replace("=", "_").replace(".", "_")
-    end_str = end or "latest"
-    return CACHE_DIR / f"{safe_key}_{start}_{end_str}.parquet"
+    return CACHE_DIR / f"{safe_key}_{start}.parquet"
 
 
 def _load_cache(cache_file: Path) -> pd.DataFrame | None:
@@ -421,20 +452,77 @@ def _load_cache(cache_file: Path) -> pd.DataFrame | None:
     return None
 
 
+def _load_cache_for_incremental(cache_file: Path, end: str | None = None
+                                 ) -> tuple[pd.DataFrame | None, str | None]:
+    """Load cached data and determine if incremental fetch is needed.
+
+    Returns:
+        (cached_df, fetch_start) — If fetch_start is None, cache is fresh
+        enough and no fetch is needed. Otherwise fetch_start is the date
+        string from which new data should be downloaded.
+    """
+    cached = _load_cache(cache_file)
+    if cached is None:
+        return None, None
+
+    today = pd.Timestamp.now().normalize()
+    end_ts = pd.Timestamp(end) if end else today
+
+    last_cached = pd.Timestamp(cached.index[-1]).normalize()
+
+    # If cache already covers the requested end date (or yesterday for
+    # open-ended queries, since today's data may not be available yet),
+    # no incremental fetch is needed.
+    target = end_ts if end else today - pd.Timedelta(days=1)
+    if last_cached >= target:
+        # Apply end filter if specified
+        if end:
+            return cached[cached.index <= end], None
+        return cached, None
+
+    # Need incremental fetch starting from the day after last cached date
+    fetch_start = (last_cached + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+    return cached, fetch_start
+
+
+def _merge_and_save(cache_file: Path, old: pd.DataFrame | None,
+                    new: pd.DataFrame, end: str | None = None) -> pd.DataFrame:
+    """Merge old cached data with newly fetched data and save."""
+    if old is not None and not old.empty:
+        combined = pd.concat([old, new])
+        combined = combined[~combined.index.duplicated(keep="last")]
+        combined = combined.sort_index()
+    else:
+        combined = new
+
+    _save_cache(cache_file, combined)
+
+    if end:
+        return combined[combined.index <= end]
+    return combined
+
+
 def _save_cache(cache_file: Path, df: pd.DataFrame) -> None:
     cache_file.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(cache_file)
 
 
-def _bulk_cache_key(tickers: list[str], start: str, end: str | None,
+def _bulk_cache_key(tickers: list[str], start: str,
                      prefix: str = "") -> str:
-    content = f"{prefix}_{sorted(tickers)}_{start}_{end}"
+    content = f"{prefix}_{sorted(tickers)}_{start}"
     return hashlib.md5(content.encode()).hexdigest()
 
 
 def _load_bulk_cache(key: str) -> pd.DataFrame | None:
     cache_file = CACHE_DIR / f"bulk_{key}.parquet"
     return _load_cache(cache_file)
+
+
+def _load_bulk_cache_incremental(key: str, end: str | None = None
+                                  ) -> tuple[pd.DataFrame | None, str | None]:
+    """Load bulk cache with incremental update check."""
+    cache_file = CACHE_DIR / f"bulk_{key}.parquet"
+    return _load_cache_for_incremental(cache_file, end)
 
 
 def _save_bulk_cache(key: str, df: pd.DataFrame) -> None:

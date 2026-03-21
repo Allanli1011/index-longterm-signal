@@ -191,6 +191,114 @@ class TestNormalizeAshareCode:
         assert _normalize_ashare_code("600519") == "600519"
 
 
+class TestIncrementalCache:
+    """Test incremental cache logic in price_data.py."""
+
+    def test_cache_path_no_end_date(self, tmp_path):
+        """Cache path should not include end date."""
+        from data.price_data import _get_cache_path, CACHE_DIR
+        import data.price_data as pd_mod
+
+        original_dir = pd_mod.CACHE_DIR
+        pd_mod.CACHE_DIR = tmp_path
+        try:
+            p1 = _get_cache_path("test", "2020-01-01", None)
+            p2 = _get_cache_path("test", "2020-01-01", "2024-12-31")
+            # Same path regardless of end date
+            assert p1 == p2
+            assert "latest" not in str(p1)
+        finally:
+            pd_mod.CACHE_DIR = original_dir
+
+    def test_incremental_no_cache(self, tmp_path):
+        """When no cache exists, returns (None, None)."""
+        from data.price_data import _load_cache_for_incremental
+        cache_file = tmp_path / "nonexistent.parquet"
+        cached, fetch_start = _load_cache_for_incremental(cache_file)
+        assert cached is None
+        assert fetch_start is None
+
+    def test_incremental_fresh_cache(self, tmp_path):
+        """When cache covers up to yesterday, no fetch needed."""
+        from data.price_data import _load_cache_for_incremental, _save_cache
+        cache_file = tmp_path / "test.parquet"
+        yesterday = pd.Timestamp.now().normalize() - pd.Timedelta(days=1)
+        dates = pd.date_range("2020-01-01", yesterday, freq="B")
+        df = pd.DataFrame({"Close": range(len(dates))}, index=dates)
+        _save_cache(cache_file, df)
+
+        cached, fetch_start = _load_cache_for_incremental(cache_file)
+        assert cached is not None
+        assert fetch_start is None
+        assert len(cached) == len(dates)
+
+    def test_incremental_stale_cache(self, tmp_path):
+        """When cache is old, returns data + fetch_start date."""
+        from data.price_data import _load_cache_for_incremental, _save_cache
+        cache_file = tmp_path / "test.parquet"
+        # Cache ends 30 days ago
+        old_end = pd.Timestamp.now().normalize() - pd.Timedelta(days=30)
+        dates = pd.date_range("2020-01-01", old_end, freq="B")
+        df = pd.DataFrame({"Close": range(len(dates))}, index=dates)
+        _save_cache(cache_file, df)
+
+        cached, fetch_start = _load_cache_for_incremental(cache_file)
+        assert cached is not None
+        assert fetch_start is not None
+        expected_start = (old_end + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+        assert fetch_start == expected_start
+
+    def test_incremental_with_end_date(self, tmp_path):
+        """When end date is specified and cache covers it, no fetch needed."""
+        from data.price_data import _load_cache_for_incremental, _save_cache
+        cache_file = tmp_path / "test.parquet"
+        dates = pd.date_range("2020-01-01", "2023-12-31", freq="B")
+        df = pd.DataFrame({"Close": range(len(dates))}, index=dates)
+        _save_cache(cache_file, df)
+
+        cached, fetch_start = _load_cache_for_incremental(
+            cache_file, end="2023-06-30")
+        assert cached is not None
+        assert fetch_start is None
+        # Should be filtered to end date
+        assert cached.index[-1] <= pd.Timestamp("2023-06-30")
+
+    def test_merge_and_save(self, tmp_path):
+        """Test merging old and new data."""
+        from data.price_data import _merge_and_save
+        cache_file = tmp_path / "test.parquet"
+
+        old_dates = pd.date_range("2020-01-01", "2020-06-30", freq="B")
+        old = pd.DataFrame({"Close": range(len(old_dates))}, index=old_dates)
+
+        new_dates = pd.date_range("2020-06-29", "2020-12-31", freq="B")
+        new = pd.DataFrame({"Close": range(100, 100 + len(new_dates))},
+                           index=new_dates)
+
+        result = _merge_and_save(cache_file, old, new)
+        # Should have no duplicate dates
+        assert not result.index.duplicated().any()
+        # Should span the full range
+        assert result.index[0] == old_dates[0]
+        assert result.index[-1] == new_dates[-1]
+        # Overlapping dates should use new data (keep="last")
+        overlap_date = pd.Timestamp("2020-06-29")
+        assert result.loc[overlap_date, "Close"] >= 100
+        # Should be saved to disk
+        assert cache_file.exists()
+
+    def test_merge_and_save_with_end_filter(self, tmp_path):
+        """Merge should filter by end date when specified."""
+        from data.price_data import _merge_and_save
+        cache_file = tmp_path / "test.parquet"
+
+        dates = pd.date_range("2020-01-01", "2020-12-31", freq="B")
+        new = pd.DataFrame({"Close": range(len(dates))}, index=dates)
+
+        result = _merge_and_save(cache_file, None, new, end="2020-06-30")
+        assert result.index[-1] <= pd.Timestamp("2020-06-30")
+
+
 class TestIndexConfig:
     """Verify all index configs are valid."""
 
@@ -204,10 +312,12 @@ class TestIndexConfig:
 
     def test_chinese_indices_have_price_source(self):
         from config.indices import INDEX_CONFIG
-        for key in ["CSI300", "CSI500", "CSI1000", "CHINA_A50"]:
+        for key in ["CSI300", "CSI500", "CSI1000"]:
             assert key in INDEX_CONFIG, f"{key} not in config"
             assert INDEX_CONFIG[key].get("price_source") == "akshare", \
                 f"{key} should have price_source=akshare"
+        # CHINA_A50 uses "auto" since it's an offshore index
+        assert INDEX_CONFIG["CHINA_A50"].get("price_source") in ("akshare", "auto")
 
     def test_constituent_source_has_fetcher(self):
         from config.indices import INDEX_CONFIG
